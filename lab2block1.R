@@ -183,6 +183,7 @@ print("Training data:")
 loss_function(train,loss_mat)
 print("Testing data:")
 loss_function(test,loss_mat)
+# When the loss matrix was applied the FPR decreased, but the error rate has gotten worse.
 
 
 
