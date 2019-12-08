@@ -6,6 +6,9 @@ library(tree)
 library(e1071)
 library(SDMTools)
 library(ggrepel)
+library(ggplot2)
+library(boot)
+library(fastICA)
 
 
 ## Assignment 2. Analysis of credit scoring ##
@@ -152,7 +155,7 @@ ggplot() +
   xlab("False-Positive Rate") + 
   ylab("True-Positive Rate") +
   ggtitle("ROC")
-# According to the ROC plot the Naive Bayes performs better due to it’s larger AUC, 
+# According to the ROC plot the Naive Bayes performs better due to its larger AUC, 
 # this could be attributed to all thresholds being used.
 # The percentage of FPR to TPR in Naive Bayes is smaller than its percentage in the 
 # optimal tree.
@@ -185,6 +188,179 @@ print("Testing data:")
 loss_function(test,loss_mat)
 # When the loss matrix was applied the FPR decreased, but the error rate has gotten worse.
 
+## Assignment 3. Uncertainty estimation ##
 
+## 1
+state_data = read.csv2("State.csv")
+state_data = state_data[order(state_data$MET),]
+
+ggplot(data = as.data.frame(state_data), aes(y = state_data[,1], x = state_data[,3]))+
+  xlab("MET") + ylab("EX")+
+  geom_point(color = "blue") 
+# The data points looks spead out over everywhere and no apparent distribution looks to fit the data.
+
+## 2
+set.seed(12345)
+tree_model = tree(EX ~ MET, data = state_data, control = tree.control(nobs = nrow(state_data), minsize = 8))
+best_fit_tree1 = cv.tree(tree_model)
+prune_best_fit_tree1 = prune.tree(tree_model, best = 3)
+summary(prune_best_fit_tree1)
+
+plot(prune_best_fit_tree1)
+text(prune_best_fit_tree1, pretty=1, cex = 0.8, xpd = TRUE)
+
+tree_fitted_results = predict(prune_best_fit_tree1, newdata = state_data)
+
+ggplot(data = as.data.frame(state_data), 
+       aes(y = state_data[,1], x = state_data[,3])) +
+  xlab("MET") + 
+  ylab("EX") +
+  geom_point(col = "red") +
+  geom_point(x = state_data$MET, y = tree_fitted_results, col = "blue")
+
+hist(residuals(prune_best_fit_tree1),
+     main = "Residual Histogram",
+     xlab = "Residuals")
+# The residual histogram is skewed to the left and there seems to be some high variance between all the residuals. 
+# The tree model fits the data poorly and there are many outliers outside the three terminal nodes.
+
+## 3
+tree_fun = function(data, ind){
+  set.seed(12345)
+  sample = state_data[ind,]
+  tree_model = tree(EX ~ MET, data = sample, control = tree.control(nobs = nrow(sample), minsize = 8)) 
+  
+  pruned_tree = prune.tree(tree_model, best = 3) 
+  
+  fitted_results = predict(pruned_tree, newdata = state_data)
+  return(fitted_results)
+}
+
+res = boot(state_data, tree_fun, R=1000)
+
+conf = envelope(res, level=0.95) 
+
+ggplot(data = as.data.frame(state_data), 
+       aes(y = state_data[,1], x = state_data[,3])) +
+  xlab("MET") + 
+  ylab("EX") +
+  geom_point(col = "red") +
+  geom_line(aes(x = state_data$MET, y = tree_fitted_results), col = "blue") +
+  geom_line(aes(x = state_data$MET, y = conf$point[1,]), col = "orange") +
+  geom_line(aes(x = state_data$MET, y = conf$point[2,]), col = "orange")
+# As is seen in the plot above, the confidence interval is not smooth because there is large variance between points. 
+# The histogram earlier showed us that the residuals are large and varied. With the confidence interval being so large
+# we can conclude that the results are not extremly accurate and that the model does not fit the data very well. 
+
+## 4
+
+mle = prune_best_fit_tree1
+
+rng = function(data, mle){ 
+  data1 = data.frame(EX = data$EX, MET = data$MET) 
+  n = length(data1$EX)
+  pred = predict(mle, newdata = state_data)
+  residual = data1$EX - pred
+  data1$EX = rnorm(n, pred, sd(residual))
+  return(data1)
+}
+
+f1 = function(data){
+  res = tree(EX ~ MET, data = data, control = tree.control(nobs=nrow(state_data),minsize = 8))
+  opt_res = prune.tree(res, best = 3)
+  return(predict(opt_res, newdata = data))
+}
+
+f2 = function(data){
+  res = tree(EX ~ MET, data = data, control = tree.control(nobs=nrow(state_data),minsize = 8))
+  opt_res = prune.tree(res, best = 3)
+  n = length(state_data$EX)
+  opt_pred = predict(opt_res, newdata = state_data)
+  pred = rnorm(n,opt_pred, sd(residuals(mle)))
+  return(pred)
+}
+set.seed(12345)
+par_boot_conf = boot(state_data, statistic = f1, R = 1000, mle = mle, ran.gen = rng, sim = "parametric") 
+conf_interval = envelope(par_boot_conf, level=0.95)  
+
+set.seed(12345)
+par_boot_pred = boot(state_data, statistic = f2, R = 1000, mle = mle, ran.gen = rng, sim = "parametric") 
+pred_interval = envelope(par_boot_pred, level = 0.95)  
+
+
+ggplot(data = as.data.frame(state_data), 
+       aes(y = state_data[,1], x = state_data[,3])) +
+  xlab("MET") + 
+  ylab("EX") +
+  geom_point(col = "red") +
+  geom_line(aes(x = state_data$MET, y = tree_fitted_results), col = "blue") +
+  geom_line(aes(x = state_data$MET, y = conf_interval$point[1,]), col = "orange") +
+  geom_line(aes(x = state_data$MET, y = conf_interval$point[2,]), col = "orange") +
+  geom_line(aes(x = state_data$MET, y = pred_interval$point[1,]), col = "black") +
+  geom_line(aes(x = state_data$MET, y = pred_interval$point[2,]), col = "black")
+
+# The 95% confidence interval fits the points better now with only two points falling outside the interval. 
+# Parametric bootstrap makes the model a bit better. 
+
+## 5
+# There is high variance between the residuals when the histogram above is considered. Because of this the parametric
+# bootstrap seems to be more appropriate as it gives less variance in the confidence interval. 
+
+## Assignment 4. Principal components ##
+
+## 1
+data = read.csv2("NIRspectra.csv", header = TRUE)
+
+data$Viscosity = c()
+prc = prcomp(data) 
+summary(prc)
+lambda = prc$sdev^2
+
+var = sprintf("%2.3f", lambda/sum(lambda)*100)
+
+screeplot(prc, main = "Principal Components")
+
+ggplot() +
+  geom_point(aes(prc$x[,1], prc$x[,2])) +
+  xlab("x1") + ylab("x2")
+
+# As can be seen from the summary and plot above, more than 99.9% of the variance is captured by the first two 
+# components. There are some outliers. 
+
+## 2
+plot(prc$rotation[,1], 
+     main="PC1",
+     xlab = "Features",
+     ylab = "Scores")
+plot(prc$rotation[,2], 
+     main="PC2",
+     xlab = "Features",
+     ylab = "Scores")
+# Plot shows PC2 is explained by a few features.
+
+## 3
+data_mat = as.matrix(data)
+set.seed(12345)
+ICA = fastICA(data_mat, n.comp = 2, fun = "logcosh", alpha = 1, row.norm = FALSE, maxit = 200, tol = 0.0001, verbose = TRUE) 
+
+posterior = ICA$K %*% ICA$W
+
+plot(posterior[,1], 
+     main="PC1",
+     xlab = "Features", 
+     ylab = "Scores")
+plot(posterior[,2], 
+     main="PC2",
+     xlab = "Features",
+     ylab = "Scores")
+
+ggplot() +
+  geom_point(aes(ICA$S[,1],ICA$S[,2])) +
+  labs(x = "W1", y = "W2")
+
+# The previos trace plots are similar, the main differance is that in the second plots, PC2 is 
+# described by many more features than the first plot.
+# W is the un-mixing matrix that maximizes the non-gaussianity of the components so we can extract 
+# the independent components.
 
 
